@@ -1,9 +1,0 @@
-services:
-  bot:
-    build: .
-    container_name: osuzhdayu-bot
-    restart: unless-stopped
-    environment:
-      CONFIG_PATH: /app/config.cfg
-    volumes:
-      - ./config.cfg:/app/config.cfg:ro

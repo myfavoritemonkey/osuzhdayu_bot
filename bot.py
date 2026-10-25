@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,6 +151,157 @@ def has_trigger(text: str, trigger_words: tuple[str, ...]) -> bool:
     )
 
 
+# Частые варианты фразы «осуждаю» на разных языках. Проверка выполняется
+# локально, поэтому обязательный ответ не зависит от решения DeepSeek.
+CONDEMNATION_PHRASES = (
+    "осуждаю",
+    "засуджую",
+    "асуджаю",
+    "осъждам",
+    "osuđujem",
+    "osuđujem",
+    "condemn",
+    "i condemn",
+    "disapprove",
+    "i disapprove",
+    "shame on you",
+    "je condamne",
+    "je désapprouve",
+    "condamne",
+    "désapprouve",
+    "condeno",
+    "desapruebo",
+    "condanno",
+    "disapprovo",
+    "desaprovo",
+    "ich verurteile",
+    "missbillige",
+    "ik veroordeel",
+    "afkeur",
+    "potępiam",
+    "potepiam",
+    "odsuzuji",
+    "odsudzujem",
+    "kınıyorum",
+    "kinuyorum",
+    "condamn",
+    "dezaprob",
+    "elítélem",
+    "elitеlem",
+    "tuomitsen",
+    "fördömer",
+    "fordømmer",
+    "καταδικάζω",
+    "أدين",
+    "أستنكر",
+    "מגנה",
+    "谴责",
+    "非難する",
+    "糾弾する",
+    "비난합니다",
+    "규탄합니다",
+    "निंदा",
+)
+
+CONDEMNATION_MARKERS = (
+    "osuzhd",
+    "osygdau",
+    "osugdau",
+    "condemn",
+    "disapprov",
+    "shameonyou",
+    "verurteil",
+    "missbillig",
+    "potep",
+    "odsuz",
+    "odsudz",
+    "kinuyor",
+    "condamn",
+    "desaprov",
+    "condann",
+)
+
+CYRILLIC_TO_LATIN = {
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ё": "yo",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "j",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "h",
+    "ц": "c",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "shch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
+}
+
+
+def compact_unicode(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(char for char in normalized if char.isalnum())
+
+
+def normalize_obfuscated(text: str) -> str:
+    """Сводит пробелы, похожие символы и кириллицу к латинскому скелету."""
+    normalized = unicodedata.normalize("NFKD", text).casefold()
+    normalized = re.sub(r"\|\s*_\s*\|", "u", normalized)
+    normalized = re.sub(r"\|\s*-\s*0", "yu", normalized)
+    normalized = normalized.replace("(_)", "o")
+    normalized = normalized.replace("/\\/", "m")
+    for source, target in CYRILLIC_TO_LATIN.items():
+        normalized = normalized.replace(source, target)
+    normalized = re.sub(r"[@4]", "a", normalized)
+    normalized = normalized.translate(str.maketrans({
+        "0": "o",
+        "3": "e",
+        "1": "i",
+        "!": "i",
+        "5": "s",
+        "$": "s",
+        "7": "t",
+        "8": "b",
+    }))
+    return "".join(
+        char for char in normalized
+        if char in "abcdefghijklmnopqrstuvwxyz"
+    )
+
+
+def has_condemnation_trigger(text: str) -> bool:
+    """Распознаёт «осуждаю» и распространённые языковые/визуальные варианты."""
+    compact_text = compact_unicode(text)
+    if any(
+        compact_phrase in compact_text
+        for compact_phrase in map(compact_unicode, CONDEMNATION_PHRASES)
+    ):
+        return True
+
+    obfuscated_text = normalize_obfuscated(text)
+    return any(marker in obfuscated_text for marker in CONDEMNATION_MARKERS)
+
+
 def normalize_forward_text(text: str) -> str:
     """Нормализует пробелы для поиска оригинала пересланного сообщения."""
     return re.sub(r"\s+", " ", text).strip().casefold()
@@ -260,21 +412,25 @@ class DeepSeekClient:
         return answer[:4096]
 
 
-def is_directly_addressed(
+def direct_address_kind(
     message: Message,
     bot_user_id: int,
     bot_username: str,
     bot_reference_words: tuple[str, ...],
-) -> bool:
-    """Распознаёт reply, @упоминание и обращение по слову «бот»."""
+) -> str | None:
+    """Возвращает способ обращения к боту: reply, mention или reference."""
     replied = message.reply_to_message
     if replied and replied.from_user and replied.from_user.id == bot_user_id:
-        return True
+        return "reply"
     text = message.text or message.caption or ""
     mentioned = bool(bot_username) and re.search(
         rf"@{re.escape(bot_username)}(?:\b|$)", text, re.IGNORECASE
     ) is not None
-    return mentioned or has_trigger(text, bot_reference_words)
+    if mentioned:
+        return "mention"
+    if has_trigger(text, bot_reference_words):
+        return "reference"
+    return None
 
 
 @dataclass
@@ -412,13 +568,21 @@ def build_router(
             conversations.pop(message.chat.id, None)
             conversation = None
 
-        triggered = has_trigger(text, settings.trigger_words)
-        addressed = settings.respond_to_direct_messages and is_directly_addressed(
+        condemnation_triggered = has_condemnation_trigger(text)
+        triggered = has_trigger(text, settings.trigger_words) or condemnation_triggered
+        # Reply на сообщение бота и явное @упоминание обязательны к ответу.
+        # Обращение обычным словом «бот» остаётся на усмотрение DeepSeek.
+        address_kind = direct_address_kind(
             message, bot_user_id, bot_username, settings.bot_reference_words
         )
-        context_active = bool(
+        addressed = address_kind is not None and (
             settings.respond_to_direct_messages
-            and conversation
+            or address_kind in {"reply", "mention"}
+        )
+        mandatory_address = address_kind in {"reply", "mention"}
+        mandatory_trigger = condemnation_triggered
+        context_active = bool(
+            conversation
             and conversation.analyzed_messages < settings.context_messages_after_reply
         )
         if not triggered and not addressed and not context_active:
@@ -428,7 +592,12 @@ def build_router(
         # В активном контекстном окне не блокируем быстрый follow-up cooldown-ом:
         # иначе пользовательский ответ сразу после сообщения бота не попадёт
         # в анализ диалога.
-        if not context_active and now - previous < settings.cooldown_seconds:
+        if (
+            not context_active
+            and not mandatory_address
+            and not mandatory_trigger
+            and now - previous < settings.cooldown_seconds
+        ):
             LOGGER.info("Пропуск из-за cooldown в чате %s", message.chat.id)
             return
 
@@ -437,7 +606,10 @@ def build_router(
             answer = await deepseek.generate_reply(
                 text,
                 author,
-                decide_whether_to_reply=not triggered,
+                # Триггер, @упоминание и reply на бота отвечаются обязательно.
+                # Только продолжение контекста и обращение словом «бот» проходят
+                # через решение DeepSeek should_reply.
+                decide_whether_to_reply=not (triggered or mandatory_address),
                 conversation_context=(
                     tuple(conversation.messages) if context_active and conversation else ()
                 ),
@@ -464,7 +636,10 @@ def build_router(
                     message.message_id,
                 )
                 await message.answer(answer)
-            if settings.respond_to_direct_messages and settings.context_messages_after_reply > 0:
+            if (
+                settings.context_messages_after_reply > 0
+                and (settings.respond_to_direct_messages or mandatory_address)
+            ):
                 conversations[message.chat.id] = ChatConversation(
                     messages=[f"Бот: {answer}"],
                     created_at=monotonic(),
