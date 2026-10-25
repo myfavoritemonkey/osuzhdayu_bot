@@ -1,0 +1,10 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+.ipynb_checkpoints
+config.cfg
+config.cfg.*
+bot_launcher.ipynb
+README.md

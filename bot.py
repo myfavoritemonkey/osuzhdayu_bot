@@ -10,6 +10,7 @@ import asyncio
 import configparser
 import json
 import logging
+import os
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ from aiogram.types import Message, ReplyParameters
 
 
 ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = ROOT / "config.cfg"
+CONFIG_PATH = Path(os.environ.get("CONFIG_PATH") or (ROOT / "config.cfg")).expanduser()
 LOGGER = logging.getLogger("osuzhdayu_bot")
 
 
