@@ -6,5 +6,4 @@ __pycache__
 .ipynb_checkpoints
 config.cfg
 config.cfg.*
-bot_launcher.ipynb
 README.md

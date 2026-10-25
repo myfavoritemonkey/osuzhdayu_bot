@@ -1,16 +1,17 @@
-FROM python:3.12-slim
+FROM golang:1.24-alpine AS builder
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    CONFIG_PATH=/app/config.cfg
+WORKDIR /src
+COPY go.mod ./
+COPY main.go ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/osuzhdayu-bot .
 
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates
 WORKDIR /app
-
-# Install dependencies in a separate layer so source-only changes rebuild quickly.
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+ENV CONFIG_PATH=/app/config.cfg
 
 # config.cfg is intentionally not copied into the image. Mount it at runtime.
-COPY bot.py ./
+COPY --from=builder /out/osuzhdayu-bot ./osuzhdayu-bot
 
-CMD ["python", "bot.py"]
+CMD ["/app/osuzhdayu-bot"]
